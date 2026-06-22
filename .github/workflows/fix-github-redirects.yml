@@ -1,0 +1,589 @@
+name: Fix GitHub Redirects
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  schedule:
+    - cron: '17 0 * * *'  # Daily at 00:17 UTC; avoid the top-of-hour Actions queue
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: fix-github-redirects-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  fix-github-redirects:
+    name: Fix GitHub Redirects
+    runs-on: windows-latest
+    env:
+      PR_TITLE: "(chore): Fix GitHub repository redirects"
+      TARGET_BRANCH: "automated-fix-github-redirects"
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: my_bucket
+          ref: ${{ env.BASE_BRANCH }}
+
+      - name: Extract all GitHub repositories
+        shell: pwsh
+        working-directory: my_bucket
+        run: |
+          $repoSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+          $repoToFileMap = @{}  # repo -> list of files containing this repo
+          $nonRepositoryRoutes = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]@(
+              'about', 'apps', 'collections', 'enterprise', 'events', 'explore',
+              'features', 'marketplace', 'new', 'notifications', 'orgs',
+              'organizations', 'pricing', 'search', 'security', 'settings',
+              'site', 'sponsors', 'topics', 'trending', 'users'
+            ),
+            [System.StringComparer]::OrdinalIgnoreCase
+          )
+
+          Write-Host "Scanning manifest files for GitHub repositories..."
+
+          Get-ChildItem 'bucket' -Filter '*.json' -File | ForEach-Object {
+            $content = Get-Content $_.FullName -Raw
+            $fileName = $_.Name
+
+            # Match only:
+            # 1. https?://github.com/<owner>/<repo>
+            # 2. https?://api.github.com/repos/<owner>/<repo>
+            # 3. https?://raw.githubusercontent.com/<owner>/<repo>
+            # Treat .git as a suffix only when it is followed by a URL boundary.
+            # Otherwise repositories such as "ericzimmerman.github.io" are truncated.
+            $matchResult = $content | Select-String -Pattern 'https?://(?:api\.github\.com/repos/|github\.com/|raw\.githubusercontent\.com/)(?<owner>[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/(?<repo>[A-Za-z0-9._-]+?)(?:\.git)?(?=[/''"\s?#]|$)' -AllMatches
+            if ($matchResult) {
+              $fileRepos = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+              $matchResult.Matches | ForEach-Object {
+                $owner = $_.Groups['owner'].Value
+                $repo = $_.Groups['repo'].Value
+
+                # github.com also hosts product and navigation routes that look like
+                # owner/repository paths. They are not repository references.
+                if (-not ($_.Value -match '^https?://github\.com/' -and $nonRepositoryRoutes.Contains($owner))) {
+                  $repoKey = "$owner/$repo"
+
+                  $repoSet.Add($repoKey) | Out-Null
+                  $fileRepos.Add($repoKey) | Out-Null
+                }
+              }
+
+              # Build reverse index: repo -> files containing this repo
+              foreach ($repoKey in $fileRepos) {
+                if (-not $repoToFileMap.ContainsKey($repoKey)) {
+                  $repoToFileMap[$repoKey] = [System.Collections.Generic.List[string]]::new()
+                }
+                $repoToFileMap[$repoKey].Add($fileName)
+              }
+            }
+          }
+
+          Write-Host "Found $($repoSet.Count) unique GitHub repositories.`n"
+
+          $repoList = @($repoSet.GetEnumerator() | ForEach-Object { $_ })
+
+          # Print all discovered repositories
+          Write-Host "=== All Discovered Repositories ==="
+          $repoList | Sort-Object | ForEach-Object { Write-Host "  https://github.com/$_" }
+          Write-Host ""
+
+          # Save reverse index: repo -> files (this also serves as the repository list)
+          ConvertTo-Json -InputObject $repoToFileMap -Depth 10 | Out-File -FilePath "$env:TEMP/repo-to-files-map.json" -Encoding UTF8
+          Write-Host "Repo-to-files map saved to: repo-to-files-map.json"
+
+      - name: Check GitHub Repository Redirects
+        shell: pwsh
+        working-directory: my_bucket
+        env:
+          BATCH_SIZE: 100
+          MAX_RETRIES: 6
+          RETRY_INITIAL_DELAY_SECONDS: 2
+        run: |
+          # Load repo-to-files map and extract repository list
+          Write-Host "Loading repositories from: $env:TEMP/repo-to-files-map.json"
+          $repoToFileMap = Get-Content "$env:TEMP/repo-to-files-map.json" -Raw | ConvertFrom-Json
+          $repoList = @($repoToFileMap.PSObject.Properties | ForEach-Object { $_.Name })
+          Write-Host "Loaded $($repoList.Count) repositories.`n"
+
+          $redirects = @{}
+          $unreachable = @()
+
+          # Retry function with exponential backoff
+          function Invoke-RequestWithRetry {
+              param(
+                  [scriptblock]$RequestScript,
+                  [string]$OperationDescription
+              )
+
+              $maxRetries = [int]$env:MAX_RETRIES
+              $initialDelay = [int]$env:RETRY_INITIAL_DELAY_SECONDS
+
+              for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+                  try {
+                      return & $RequestScript
+                  } catch {
+                      if ($attempt -lt $maxRetries) {
+                          $delay = $initialDelay * [Math]::Pow(2, $attempt - 1)
+                          Write-Host "  [!] $OperationDescription failed (attempt $attempt/$maxRetries). Retrying in ${delay}s..."
+                          Write-Host "      Error: $($_.Exception.Message)"
+                          Start-Sleep -Seconds $delay
+                      } else {
+                          Write-Host "  [X] $OperationDescription failed after $maxRetries attempts."
+                          throw
+                      }
+                  }
+              }
+          }
+
+          # Split into batches
+          $batchSize = [int]$Env:BATCH_SIZE
+          $batches = [Math]::Ceiling($repoList.Count / $batchSize)
+
+          Write-Host "Checking in $batches batches of $batchSize repos each."
+          Write-Host "Retry policy: $env:MAX_RETRIES attempts with exponential backoff (initial: ${env:RETRY_INITIAL_DELAY_SECONDS}s)`n"
+
+          for ($batch = 0; $batch -lt $batches; $batch++) {
+              $start = $batch * $batchSize
+              $end = [Math]::Min($start + $batchSize - 1, $repoList.Count - 1)
+              $currentBatch = $repoList[$start..$end]
+
+              # Build GraphQL query with aliases
+              $queryParts = @("query {")
+              $repoIndex = 0
+
+              foreach ($repo in $currentBatch) {
+                  $parts = $repo -split '/'
+                  $owner = $parts[0]
+                  $name = $parts[1]
+                  $alias = "repo$repoIndex"
+                  $queryParts += "  $($alias): repository(owner: `"$owner`", name: `"$name`") { owner { login } name }"
+                  $repoIndex++
+              }
+
+              $queryParts += "}"
+              $graphqlQuery = $queryParts -join "`n"
+
+              try {
+                  $percent = [Math]::Round((($end + 1) / $repoList.Count) * 100, 1)
+                  Write-Host "[$($batch + 1)/$batches] ($percent%) Processing repos $($start + 1)-$($end + 1) of $($repoList.Count)..."
+
+                  $response = Invoke-RequestWithRetry -RequestScript {
+                      $headers = @{
+                          "Authorization" = "Bearer $env:GITHUB_TOKEN"
+                          "Accept" = "application/vnd.github+json"
+                      }
+
+                      $body = @{
+                          query = $graphqlQuery
+                      } | ConvertTo-Json
+
+                      Invoke-WebRequest -Uri "https://api.github.com/graphql" -Method Post -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 30
+                  } -OperationDescription "GraphQL batch request"
+
+                  $data = $response.Content | ConvertFrom-Json
+
+                  # A missing repository produces an alias-scoped NOT_FOUND error.
+                  # Any other GraphQL error means this batch was not checked reliably.
+                  $notFoundAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                  # Do not wrap a missing property in @(...): in PowerShell,
+                  # @($null) contains one null element and would look like an error.
+                  foreach ($graphqlError in $data.errors) {
+                      $errorPath = @($graphqlError.path)
+                      $alias = if ($errorPath.Count -gt 0) { [string]$errorPath[0] } else { $null }
+
+                      if ($graphqlError.type -eq 'NOT_FOUND' -and $alias) {
+                          $notFoundAliases.Add($alias) | Out-Null
+                          continue
+                      }
+
+                      throw "GraphQL error while checking batch $($batch + 1): $($graphqlError.message)"
+                  }
+
+                  # Get rate limit info from response headers
+                  $rateLimitUsed = $response.Headers['X-RateLimit-Used']
+                  $rateLimitLimit = $response.Headers['X-RateLimit-Limit']
+                  $rateLimitRemaining = $response.Headers['X-RateLimit-Remaining']
+
+                  Write-Host "  [-] Token Usage: $rateLimitUsed of $rateLimitLimit requests used ($rateLimitRemaining remaining)."
+
+                  # Check each repository response
+                  $repoIndex = 0
+                  foreach ($repo in $currentBatch) {
+                      $alias = "repo$repoIndex"
+                      $result = $data.data.$alias
+
+                      if ($result) {
+                          $actualRepo = "$($result.owner.login)/$($result.name)"
+
+                          # Check if it was redirected (requested repo != actual repo, case-sensitive)
+                          if ($actualRepo -cne $repo) {
+                              $redirects[$repo] = $actualRepo
+                              Write-Host "  [=] Found repository redirect: https://github.com/$repo -> https://github.com/$actualRepo"
+                          }
+                      } elseif ($notFoundAliases.Contains($alias)) {
+                          # GraphQL explicitly reported that the repository was not found.
+                          $unreachable += $repo
+                          Write-Host "  [x] Found unreachable repository: https://github.com/$repo"
+                      } else {
+                          throw "GraphQL returned no repository and no NOT_FOUND error for '$repo'."
+                      }
+
+                      $repoIndex++
+                  }
+              } catch {
+                  throw "Failed to check batch $($batch + 1) of ${batches}: $($_.Exception.Message)"
+              }
+
+              # Add delay between batches to avoid rate limiting
+              if ($batch -lt $batches - 1) {
+                  Start-Sleep -Seconds ([int]$env:RETRY_INITIAL_DELAY_SECONDS)
+              }
+          }
+
+          Write-Host "`n=== Checked: $($repoList.Count) repositories ==="
+          Write-Host "=== Found: $($redirects.Count) redirects, $($unreachable.Count) unreachable ===`n"
+
+          if ($redirects.Count -gt 0) {
+            Write-Host "=== Redirect Details ==="
+            $redirects.GetEnumerator() | Sort-Object Name | ForEach-Object {
+              Write-Host "  https://github.com/$($_.Name) -> https://github.com/$($_.Value)"
+            }
+          }
+
+          if ($unreachable.Count -gt 0) {
+            Write-Host "`n=== Unreachable Repositories ==="
+            $unreachable | ForEach-Object {
+              Write-Host "  https://github.com/$_"
+            }
+          }
+
+          # Save redirects to file
+          ConvertTo-Json -InputObject $redirects | Out-File -FilePath "$env:TEMP/redirects.json" -Encoding UTF8
+          Write-Host "Redirects saved to: redirects.json"
+
+          # Save unreachable to file
+          ConvertTo-Json -InputObject @($unreachable) | Out-File -FilePath "$env:TEMP/unreachable.json" -Encoding UTF8
+          Write-Host "Unreachable saved to: unreachable.json"
+
+      - name: Apply redirects to manifests
+        shell: pwsh
+        working-directory: my_bucket
+        run: |
+          $redirectsFile = "$env:TEMP/redirects.json"
+          Write-Host "Loading redirects from: $redirectsFile..."
+          $redirects = @{}
+          (Get-Content $redirectsFile | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+              $redirects[$_.Name] = $_.Value
+          }
+
+          if ($redirects.Count -eq 0) {
+            Write-Host "No redirects found. Skipping manifest updates."
+            exit 0
+          }
+
+          # Load repo-to-files reverse index
+          Write-Host "Loading repo-to-files map..."
+          $repoToFileMap = @{}
+          (Get-Content "$env:TEMP/repo-to-files-map.json" -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+              $repoToFileMap[$_.Name] = [string[]]$_.Value
+          }
+
+          # Build set of files that need to be updated
+          $filesToUpdate = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+          $redirectsToApply = @{}
+
+          foreach ($redirect in $redirects.GetEnumerator()) {
+              $oldRepo = $redirect.Name
+              $newRepo = $redirect.Value
+
+              # Check if this repo appears in any manifest
+              if ($repoToFileMap.ContainsKey($oldRepo)) {
+                  $filesWithThisRepo = $repoToFileMap[$oldRepo]
+                  foreach ($fileName in $filesWithThisRepo) {
+                      $filesToUpdate.Add($fileName) | Out-Null
+                  }
+                  $redirectsToApply[$oldRepo] = $newRepo
+              }
+          }
+
+          Write-Host "Found $($filesToUpdate.Count) files that need updates.`n"
+
+          $changedFiles = @{}
+          $replacementLog = @()
+
+          Write-Host "Applying redirects to relevant files...`n"
+
+          # Only process files that contain the repos we need to redirect
+          foreach ($fileName in $filesToUpdate) {
+              $filePath = "bucket/$fileName"
+              if (-not (Test-Path $filePath)) {
+                  Write-Host "  [!] File not found: $fileName"
+                  continue
+              }
+
+              $content = Get-Content $filePath -Raw -Encoding UTF8
+              $originalContent = $content
+              $packageName = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+
+              $redirectsToApply.GetEnumerator() | ForEach-Object {
+                  $oldRepo = $_.Name
+                  $newRepo = $_.Value
+
+                  # Replace all formats (case-insensitive replace to catch all variants)
+                  $escapedOldRepo = [regex]::Escape($oldRepo)
+                  $repoBoundary = '(?=(?:\.git)?(?:[/''"\s?#]|$))'
+                  $urlMappings = [ordered]@{
+                      "https?://github\.com/$escapedOldRepo$repoBoundary"                 = "https://github.com/$newRepo"
+                      "https?://api\.github\.com/repos/$escapedOldRepo$repoBoundary"      = "https://api.github.com/repos/$newRepo"
+                      "https?://raw\.githubusercontent\.com/$escapedOldRepo$repoBoundary" = "https://raw.githubusercontent.com/$newRepo"
+                  }
+
+                  $replaced = $false
+                  foreach ($pattern in $urlMappings.Keys) {
+                      # Check if pattern exists (case-insensitive)
+                      if ($content -match $pattern) {
+                          # Use case-insensitive replace option to ensure we catch all case variants
+                          # and replace with GitHub's official casing
+                          $content = [regex]::Replace($content, $pattern, $urlMappings[$pattern], [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                          $replacementLog += @{
+                              Package = $packageName
+                              URL = $urlMappings[$pattern]
+                          }
+                          $replaced = $true
+                      }
+                  }
+                  if ($replaced) {
+                      $changedFiles[$packageName] = $true
+                  }
+              }
+
+              # Only write if content changed
+              if ($content -cne $originalContent) {
+                  $content | Out-File -FilePath $filePath -Encoding UTF8 -NoNewline
+              }
+          }
+
+          # Calculate alignment width based on longest package name
+          $maxPackageNameLen = 0
+          if ($replacementLog.Count -gt 0) {
+              $maxPackageNameLen = ($replacementLog | ForEach-Object { $_.Package.Length } | Measure-Object -Maximum).Maximum
+          }
+
+          # Print all replacements with proper alignment
+          $replacementLog | ForEach-Object {
+              $alignedName = $_.Package.PadRight($maxPackageNameLen)
+              Write-Host "$alignedName`: replaced URL -> $($_.URL)"
+          }
+
+          Write-Host "`nTotal files modified: $($changedFiles.Count)."
+
+      - name: Commit and push
+        id: commit-push
+        shell: pwsh
+        working-directory: my_bucket
+        run: |
+          $userName = if ($env:USER_NAME) { $env:USER_NAME } else { 'github-actions[bot]' }
+          $userEmail = if ($env:USER_EMAIL) { $env:USER_EMAIL } else { '41898282+github-actions[bot]@users.noreply.github.com' }
+          $targetBranch = $env:TARGET_BRANCH
+          $baseBranch = $env:BASE_BRANCH
+          $title = $env:PR_TITLE
+
+          git config user.name "$userName"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to configure git user name." }
+          git config user.email "$userEmail"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to configure git user email." }
+
+          Write-Host "Base branch: $baseBranch"
+          Write-Host "Target branch: $targetBranch"
+
+          # Check if there are actual file changes
+          $changedFiles = @(git diff --name-only -- bucket/)
+          if ($LASTEXITCODE -ne 0) { throw "Failed to inspect manifest changes." }
+
+          # Guard clause: no changes, skip everything
+          if ($changedFiles.Count -eq 0) {
+              Write-Host "No file changes detected, skipping commit and push."
+              "should_create_pr=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+              exit 0
+          }
+
+          Write-Host "Changes detected, preparing to commit..."
+
+          $apiHeaders = @{
+              "Authorization" = "Bearer $env:GITHUB_TOKEN"
+              "Accept" = "application/vnd.github+json"
+          }
+          $repo = $env:GITHUB_REPOSITORY
+          $headFilter = [Uri]::EscapeDataString("$env:GITHUB_REPOSITORY_OWNER`:$targetBranch")
+
+          # Refuse to overwrite a same-named branch or PR owned by somebody else.
+          $openPrUrl = "https://api.github.com/repos/$repo/pulls?state=open&head=$headFilter"
+          # Invoke-RestMethod returns $null for an empty or degenerate response, and
+          # @($null) yields a one-element array holding $null, which would be mistaken
+          # for a single pull request. Keep only entries that are real pull request objects.
+          $openPRs = @(
+              Invoke-RestMethod -Uri $openPrUrl -Method Get -Headers $apiHeaders |
+                  Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $_.number -and $_.user }
+          )
+          if ($openPRs.Count -gt 1) {
+              throw "Multiple open pull requests use '$targetBranch'; refusing to overwrite it."
+          }
+          foreach ($openPR in $openPRs) {
+              $isCreatedByBot = $openPR.user.type -eq 'Bot' -and $openPR.user.login -eq 'github-actions[bot]'
+              if (-not $isCreatedByBot) {
+                  throw "PR #$($openPR.number) uses '$targetBranch' but belongs to $($openPR.user.login); refusing to overwrite it."
+              }
+              if ($openPR.base.ref -ne $baseBranch) {
+                  throw "PR #$($openPR.number) uses '$targetBranch' against '$($openPR.base.ref)', not '$baseBranch'; refusing to overwrite it."
+              }
+          }
+
+          $remoteBranchLines = @(git ls-remote --heads origin "refs/heads/$targetBranch")
+          if ($LASTEXITCODE -ne 0) { throw "Failed to inspect remote branch '$targetBranch'." }
+          if ($remoteBranchLines.Count -gt 1) { throw "Multiple remote refs matched '$targetBranch'." }
+
+          $expectedRemoteSha = $null
+          if ($remoteBranchLines.Count -eq 1) {
+              $expectedRemoteSha = ($remoteBranchLines[0] -split '\s+')[0]
+              $remoteCommit = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/commits/$expectedRemoteSha" -Method Get -Headers $apiHeaders
+              $isBotCommit = $remoteCommit.committer.login -eq 'github-actions[bot]' -or
+                  $remoteCommit.commit.committer.email -eq '41898282+github-actions[bot]@users.noreply.github.com'
+
+              if (-not $isBotCommit) {
+                  throw "Remote branch '$targetBranch' does not point to a workflow-owned commit; refusing to overwrite it."
+              }
+          }
+
+          Write-Host "Creating branch $targetBranch..."
+          git switch --create $targetBranch
+          if ($LASTEXITCODE -ne 0) { throw "Failed to create local branch '$targetBranch'." }
+
+          Write-Host "Committing changes..."
+          git add -- bucket/
+          if ($LASTEXITCODE -ne 0) { throw "Failed to stage manifest changes." }
+          git commit -m $title
+          if ($LASTEXITCODE -ne 0) { throw "Failed to commit manifest changes." }
+
+          if ($expectedRemoteSha) {
+              Write-Host "Updating workflow-owned branch $targetBranch with force-with-lease..."
+              git push origin "HEAD:refs/heads/$targetBranch" "--force-with-lease=refs/heads/$targetBranch`:$expectedRemoteSha"
+          } else {
+              Write-Host "Publishing new branch $targetBranch..."
+              git push origin "HEAD:refs/heads/$targetBranch"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Failed to push '$targetBranch'." }
+
+          "should_create_pr=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Successfully pushed to $targetBranch."
+
+      - name: Create pull request
+        if: steps.commit-push.outputs.should_create_pr == 'true'
+        shell: pwsh
+        working-directory: my_bucket
+        run: |
+          Write-Host "Strategy is to create PR, proceeding..."
+
+          # Common variables
+          $targetBranch = $env:TARGET_BRANCH
+          $baseBranch = $env:BASE_BRANCH
+          $title = $env:PR_TITLE
+
+          # Setup API request
+          $apiHeaders = @{
+              "Authorization" = "Bearer $env:GITHUB_TOKEN"
+              "Accept" = "application/vnd.github+json"
+          }
+          $repo = $env:GITHUB_REPOSITORY
+
+          # Check if we have anything to report (redirects or unreachable)
+          $redirects = @{}
+          (Get-Content "$env:TEMP/redirects.json" -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+              $redirects[$_.Name] = $_.Value
+          }
+          $unreachable = @(Get-Content "$env:TEMP/unreachable.json" -Raw | ConvertFrom-Json)
+
+          Write-Host "Found data to report: redirects=$($redirects.Count), unreachable=$($unreachable.Count)"
+
+          # Build workflow run URL
+          $workflowUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          Write-Host "Workflow URL: $workflowUrl"
+
+          # Build PR description
+          $descriptionLines = @("This automated workflow detected the following issues with GitHub repositories:")
+
+          if ($redirects.Count -gt 0) {
+              $descriptionLines += "- **Repository Redirects** ($($redirects.Count) found):"
+              $redirects.GetEnumerator() | Sort-Object Name | ForEach-Object {
+                  $descriptionLines += "  - https://github.com/$($_.Name) -> https://github.com/$($_.Value)"
+              }
+          }
+
+          if ($unreachable.Count -gt 0) {
+              $descriptionLines += "- **Unreachable Repositories** ($($unreachable.Count) found):"
+              $unreachable | Sort-Object | ForEach-Object {
+                  $descriptionLines += "  - https://github.com/$_"
+              }
+          }
+
+          $descriptionLines += "`n[_Check the full log for details._]($workflowUrl)"
+
+          $prBody = $descriptionLines -join "`n"
+
+          # Check if PR already exists
+          $headFilter = [Uri]::EscapeDataString("$env:GITHUB_REPOSITORY_OWNER`:$targetBranch")
+          $baseFilter = [Uri]::EscapeDataString($baseBranch)
+          $prListUrl = "https://api.github.com/repos/$repo/pulls?state=open&head=$headFilter&base=$baseFilter"
+          Write-Host "Checking if PR already exists... ($prListUrl)"
+
+          # Same guard as the commit-push step: drop $null or non-PR entries so a
+          # degenerate API response is not mistaken for one existing pull request.
+          $existingPRs = @(
+              Invoke-RestMethod -Uri $prListUrl -Method Get -Headers $apiHeaders |
+                  Where-Object { $_ -is [System.Management.Automation.PSCustomObject] -and $_.number -and $_.user }
+          )
+
+          if ($existingPRs.Count -gt 1) {
+              throw "Multiple open pull requests use '$targetBranch'; refusing to choose one."
+          }
+
+          if ($existingPRs.Count -eq 1) {
+              $existingPR = $existingPRs[0]
+
+              # Check if PR was created by this workflow
+              $isCreatedByBot = $existingPR.user.type -eq "Bot" -and $existingPR.user.login -eq "github-actions[bot]"
+
+              if (-not $isCreatedByBot) {
+                  throw "PR #$($existingPR.number) was created by $($existingPR.user.login), not by this workflow. Cannot update PR created by other users."
+              }
+
+              # Update existing PR
+              Write-Host "PR already exists ($($existingPR.html_url)), updating..."
+              $updatePRBody = @{
+                  title = $title
+                  body = $prBody
+              } | ConvertTo-Json
+              $updatePRUrl = "https://api.github.com/repos/$repo/pulls/$($existingPR.number)"
+              Invoke-RestMethod -Uri $updatePRUrl -Method Patch -Headers $apiHeaders -Body $updatePRBody -ContentType "application/json" | Out-Null
+              Write-Host "PR updated: $($existingPR.html_url)"
+          } else {
+              # Create new PR
+              Write-Host "Creating new PR..."
+              $createPRBody = @{
+                  title = $title
+                  head = $targetBranch
+                  base = $baseBranch
+                  body = $prBody
+              } | ConvertTo-Json
+
+              $createPRUrl = "https://api.github.com/repos/$repo/pulls"
+              $createdPR = Invoke-RestMethod -Uri $createPRUrl -Method Post -Headers $apiHeaders -Body $createPRBody -ContentType "application/json"
+              Write-Host "PR created: $($createdPR.html_url)"
+          }
