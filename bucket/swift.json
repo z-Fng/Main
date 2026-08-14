@@ -53,7 +53,7 @@
         "SDKROOT": "$dir\\Platforms\\Windows.platform\\Developer\\SDKs\\Windows.sdk"
     },
     "checkver": {
-        "url": "https://github.com/apple/swift",
+        "url": "https://github.com/swiftlang/swift",
         "regex": "/swift-([\\d.]+)-RELEASE"
     },
     "autoupdate": {
