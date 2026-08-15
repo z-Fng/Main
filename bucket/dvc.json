@@ -8,7 +8,7 @@
     "innosetup": true,
     "bin": "dvc.exe",
     "checkver": {
-        "github": "https://github.com/iterative/dvc"
+        "github": "https://github.com/treeverse/dvc"
     },
     "autoupdate": {
         "url": "https://r2.dvc.org/dvc-pkgs/exe/dvc-$version.exe"
