@@ -1,5 +1,5 @@
 {
-    "version": "1.1.13",
+    "version": "1.1.19",
     "description": "The terminal-first surface to interact with Antigravity agents.",
     "homepage": "https://antigravity.google/product/antigravity-cli",
     "license": {
@@ -8,12 +8,12 @@
     },
     "architecture": {
         "64bit": {
-            "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.13-6057583128215552/windows-x64/cli_windows_x64.exe#/antigravity-cli.exe",
-            "hash": "sha512:b53506a99fd47317040d8a22ac6a54c0c8726a2854fb897b1906b27e0a98e4a8380ccf2fa4810a2bc7a69e6e39040d7799d0616e79d596ab0d463fa707f5396a"
+            "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.19-4894004681244672/windows-x64/cli_windows_x64.exe#/antigravity-cli.exe",
+            "hash": "sha512:5b7c6c93d90244b8db44bd6e3d6cef2d7092947ca7870e77df8e626f6a58e2322f3623cc0d239e90cb698d1f072168a797362a51e25b22338aa6a3e2666df31e"
         },
         "arm64": {
-            "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.13-6057583128215552/windows-arm/cli_windows_arm64.exe#/antigravity-cli.exe",
-            "hash": "sha512:47d947782a64092584f95907f1a2320052a029660b3236006e822f3fd4a7863fa6cae809ab465c386133decf30219329b26d75eea6f8c2aaf318ad1f9b498544"
+            "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.19-4894004681244672/windows-arm/cli_windows_arm64.exe#/antigravity-cli.exe",
+            "hash": "sha512:2ea35aa877892b1c40482ff748bac90958998bfe15e81f49ebb1f3880550ecbdf50786b057f6b95923236b48ab589a678cad5a9ecf150e4ff4cf6e9eac582edd"
         }
     },
     "bin": [
