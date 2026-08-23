@@ -1,5 +1,5 @@
 {
-    "version": "9.2.0957",
+    "version": "9.2.0995",
     "description": "A highly configurable text editor",
     "homepage": "https://www.vim.org",
     "license": "Vim",
@@ -9,16 +9,16 @@
     },
     "architecture": {
         "64bit": {
-            "url": "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0957/gvim_9.2.0957_x64_signed.zip",
-            "hash": "e363c0a855648210ff049df763c222f46ee8e7809befb49ef9b70010a36e2104"
+            "url": "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0995/gvim_9.2.0995_x64_signed.zip",
+            "hash": "43f6187cb4896c20ba01447b310964aabf4195e8e2015d9fc1d8eb4972e52e83"
         },
         "32bit": {
-            "url": "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0957/gvim_9.2.0957_x86_signed.zip",
-            "hash": "6e7e186f65c99a80a3bbb855beeb0140f2a5a6e9d5395114c00ed873fc7e20ce"
+            "url": "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0995/gvim_9.2.0995_x86_signed.zip",
+            "hash": "4f8e9eb96c3ab1adf25a3d41b5c68db76784f7c05b6fb84905923799da6a9b2c"
         },
         "arm64": {
-            "url": "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0957/gvim_9.2.0957_arm64_signed.zip",
-            "hash": "a025e0d2bc4ee5fd2cb04f57fc34d53cab1207fbef7f53d884ca1e9636c3cbc0"
+            "url": "https://github.com/vim/vim-win32-installer/releases/download/v9.2.0995/gvim_9.2.0995_arm64_signed.zip",
+            "hash": "2928acba4dd0a4b1d3a408af0ae7e6dc5d03af57bdcef9ca510244d7e493d077"
         }
     },
     "extract_dir": "vim/vim92",
