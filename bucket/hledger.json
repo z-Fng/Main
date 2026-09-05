@@ -5,7 +5,7 @@
     "license": "GPL-3.0-only",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/simonmichael/hledger/releases/download/1.52.3/hledger-windows-x64.zip",
+            "url": "https://github.com/plaintextaccounting/hledger/releases/download/1.52.3/hledger-windows-x64.zip",
             "hash": "ae16e1f6a311f7cae6e09d4ef1d0fc0c214fb4041d9100d0ac29bade1219fc09"
         }
     },
@@ -15,12 +15,12 @@
         "hledger-ui.exe"
     ],
     "checkver": {
-        "github": "https://github.com/simonmichael/hledger"
+        "github": "https://github.com/plaintextaccounting/hledger"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/simonmichael/hledger/releases/download/$version/hledger-windows-x64.zip"
+                "url": "https://github.com/plaintextaccounting/hledger/releases/download/$version/hledger-windows-x64.zip"
             }
         }
     }
