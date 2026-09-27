@@ -7,6 +7,10 @@
         "64bit": {
             "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.3.4/omp-windows-x64.exe#/omp.exe",
             "hash": "7abb9e215412e7cd457b527365cf5700d8cdd383d162d1ca0d9e7f0610ddbab1"
+        },
+        "arm64": {
+            "url": "https://github.com/can1357/oh-my-pi/releases/download/v18.3.4/omp-windows-arm64.exe#/omp.exe",
+            "hash": "e4d0d2b995a773c5a540e644c0316e69614d47a397ab7badf398c1dd6642af87"
         }
     },
     "bin": "omp.exe",
@@ -15,6 +19,9 @@
         "architecture": {
             "64bit": {
                 "url": "https://github.com/can1357/oh-my-pi/releases/download/v$version/omp-windows-x64.exe#/omp.exe"
+            },
+            "arm64": {
+                "url": "https://github.com/can1357/oh-my-pi/releases/download/v$version/omp-windows-arm64.exe#/omp.exe"
             }
         }
     }
