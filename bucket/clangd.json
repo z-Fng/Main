@@ -6,10 +6,10 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/clangd/clangd/releases/download/22.1.6/clangd-windows-22.1.6.zip",
-            "hash": "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1",
-            "extract_dir": "clangd_22.1.6"
+            "hash": "ce54f16e0b4fd76d450eeda9664420b195360b73febcfe40e661108fa57f2ce1"
         }
     },
+    "extract_dir": "clangd_22.1.6",
     "bin": "bin\\clangd.exe",
     "checkver": {
         "github": "https://github.com/clangd/clangd"
@@ -17,9 +17,9 @@
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/clangd/clangd/releases/download/$version/clangd-windows-$version.zip",
-                "extract_dir": "clangd_$version"
+                "url": "https://github.com/clangd/clangd/releases/download/$version/clangd-windows-$version.zip"
             }
-        }
+        },
+        "extract_dir": "clangd_$version"
     }
 }

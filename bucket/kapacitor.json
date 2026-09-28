@@ -6,10 +6,10 @@
     "architecture": {
         "64bit": {
             "url": "https://dl.influxdata.com/kapacitor/releases/kapacitor-1.8.7_windows_amd64.zip",
-            "hash": "df5a9ed6d07886b288313798e9e2e874a29e77742a532459806ade61cc1683d7",
-            "extract_dir": "kapacitor-1.8.7-1"
+            "hash": "df5a9ed6d07886b288313798e9e2e874a29e77742a532459806ade61cc1683d7"
         }
     },
+    "extract_dir": "kapacitor-1.8.7-1",
     "bin": [
         "kapacitor.exe",
         "kapacitord.exe"
@@ -26,9 +26,9 @@
                 "hash": {
                     "url": "https://portal.influxdata.com/downloads/",
                     "regex": "$sha256.*\\s.*\\s.*$basename"
-                },
-                "extract_dir": "kapacitor-$version-1"
+                }
             }
-        }
+        },
+        "extract_dir": "kapacitor-$version-1"
     }
 }
