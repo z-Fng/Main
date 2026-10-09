@@ -1,7 +1,7 @@
 {
     "version": "12.13.0",
     "description": "Versatile HTTP load testing tool",
-    "homepage": "https://github.com/tsenart/vegeta",
+    "homepage": "http://godoc.org/github.com/tsenart/vegeta/lib",
     "license": "MIT",
     "architecture": {
         "32bit": {
@@ -18,7 +18,9 @@
         }
     },
     "bin": "vegeta.exe",
-    "checkver": "github",
+    "checkver": {
+        "github": "https://github.com/tsenart/vegeta"
+    },
     "autoupdate": {
         "architecture": {
             "32bit": {
